@@ -2834,7 +2834,14 @@ def _launch_tui(
         except KeyboardInterrupt:
             code = 130
 
-        if code in {0, 130}:
+        # Any exit gets the resume hint except 42 (update relaunch prints its
+        # own message below). The old {0, 130} allowlist silently dropped the
+        # hint on SIGHUP/SIGTERM/OOM/dead-stream exits (129/143/137/1) even
+        # though the session was already persisted and fully resumable —
+        # closing the terminal tab, an SSH drop, or a memory-critical exit
+        # all skipped it. _print_tui_exit_summary already no-ops safely if
+        # the session can't be found.
+        if code != 42:
             _print_tui_exit_summary(resume_session_id, active_session_file)
     finally:
         try:

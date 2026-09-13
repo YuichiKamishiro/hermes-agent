@@ -11,3 +11,7 @@ export const PLACEHOLDERS = [
 ]
 
 export const PLACEHOLDER = pick(PLACEHOLDERS)
+
+/** Idle mid-session composer hint — replaces the fully blank `❯ ` row that
+ *  read as a rendering glitch between the input frame and the status rule. */
+export const FOLLOW_UP_PLACEHOLDER = 'Reply… (/ for commands)'

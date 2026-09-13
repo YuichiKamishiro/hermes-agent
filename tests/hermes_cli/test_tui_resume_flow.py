@@ -256,6 +256,48 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
 
 
 
+def test_launch_tui_prints_resume_hint_on_signal_exit_codes(monkeypatch, main_mod):
+    """#regression: SIGTERM/SIGHUP/OOM/dead-stream exits (143/129/137/1) used
+    to silently skip the resume hint under the old {0, 130} allowlist, even
+    though the session was already persisted and resumable. Any exit except
+    42 (update relaunch) must print it."""
+    printed = []
+    monkeypatch.setattr(
+        main_mod, "_make_tui_argv", lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path("."))
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda argv, cwd=None, env=None: 143)
+    monkeypatch.setattr(
+        main_mod, "_print_tui_exit_summary", lambda *a, **kw: printed.append(a)
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert printed, "resume hint must print on a SIGTERM-style exit code"
+
+
+def test_launch_tui_skips_resume_hint_on_update_exit_code(monkeypatch, main_mod):
+    """Exit code 42 (update relaunch) prints its own message instead."""
+    printed = []
+    monkeypatch.setattr(
+        main_mod, "_make_tui_argv", lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path("."))
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda argv, cwd=None, env=None: 42)
+    monkeypatch.setattr(
+        main_mod, "_print_tui_exit_summary", lambda *a, **kw: printed.append(a)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.relaunch",
+        types.SimpleNamespace(relaunch=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0))),
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert not printed
+
+
 def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):
     tui_dir = tmp_path / "ui-tui"
     tsx = tui_dir / "node_modules" / ".bin" / "tsx"

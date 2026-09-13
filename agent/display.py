@@ -1051,6 +1051,87 @@ def _summarize_rendered_diff_sections(
     return rendered
 
 
+def _summarize_raw_diff_sections(
+    diff: str,
+    *,
+    max_files: int = _MAX_INLINE_DIFF_FILES,
+    max_lines: int = _MAX_INLINE_DIFF_LINES,
+) -> str:
+    """Cap a unified diff by file count/line count, keeping RAW text intact
+    (no ANSI, no header collapsing) — for surfaces that render/highlight the
+    diff themselves (TUI, ACP). Mirrors _summarize_rendered_diff_sections'
+    budget but must never touch line content, or downstream syntax/diff
+    highlighting loses its `--- a/x` / `+++ b/x` anchors (#unified-diff-pipeline)."""
+    sections = _split_unified_diff_sections(diff)
+    rendered: list[str] = []
+    omitted_files = 0
+    omitted_lines = 0
+
+    for idx, section in enumerate(sections):
+        section_lines = section.splitlines()
+
+        if idx >= max_files:
+            omitted_files += 1
+            omitted_lines += len(section_lines)
+            continue
+
+        remaining_budget = max_lines - len(rendered)
+        if remaining_budget <= 0:
+            omitted_lines += len(section_lines)
+            omitted_files += 1
+            continue
+
+        if len(section_lines) <= remaining_budget:
+            rendered.extend(section_lines)
+            continue
+
+        rendered.extend(section_lines[:remaining_budget])
+        omitted_lines += len(section_lines) - remaining_budget
+        omitted_files += 1 + max(0, len(sections) - idx - 1)
+        for leftover in sections[idx + 1:]:
+            omitted_lines += len(leftover.splitlines())
+        break
+
+    if omitted_files or omitted_lines:
+        summary = f"… omitted {omitted_lines} diff line(s)"
+        if omitted_files:
+            summary += f" across {omitted_files} additional file(s)/section(s)"
+        rendered.append(summary)
+
+    return "\n".join(rendered)
+
+
+def extract_capped_raw_diff(
+    tool_name: str,
+    result: str | None,
+    *,
+    function_args: dict | None = None,
+    snapshot: LocalEditSnapshot | None = None,
+    max_files: int = _MAX_INLINE_DIFF_FILES,
+    max_lines: int = _MAX_INLINE_DIFF_LINES,
+) -> str | None:
+    """Like render_edit_diff_with_delta, but returns the capped diff as RAW
+    unified-diff text (real `--- a/x` / `+++ b/x` / `@@` lines, no ANSI, no
+    `a/x → b/x` header collapsing) instead of a pre-rendered ANSI string.
+
+    render_edit_diff_with_delta's `_render_inline_unified_diff` is a
+    terminal-printer helper: it colors AND collapses the two header lines
+    into one `a/x → b/x` row, which is correct for the classic CLI's
+    prompt_toolkit-safe printer but destroys the `--- `/`+++ ` anchors a
+    downstream renderer needs to detect the file's language and apply its
+    own syntax highlighting (TUI's `unifiedDiff.ts`). Surfaces that render
+    the diff themselves belong on this path, not render_edit_diff_with_delta.
+    """
+    diff = extract_edit_diff(tool_name, result, function_args=function_args, snapshot=snapshot)
+    if not diff:
+        return None
+    try:
+        return _summarize_raw_diff_sections(diff, max_files=max_files, max_lines=max_lines) or None
+    except Exception as exc:
+        logger.debug("Could not cap raw inline diff: %s", exc)
+        return diff
+
+
 def render_edit_diff_with_delta(
     tool_name: str,
     result: str | None,

@@ -456,7 +456,10 @@ class TurnController {
     const todos = parseTodos(value)
 
     if (todos !== null) {
-      patchTurnState({ todos })
+      // lastTodos is the HUD's read model: it survives archiveTodosAtTurnEnd
+      // clearing `todos` at turn boundaries, so the fixed top-right panel
+      // doesn't blank out the instant a turn finishes (#todo-hud-persist).
+      patchTurnState({ lastTodos: todos, todos })
     }
   }
 

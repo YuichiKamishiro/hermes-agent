@@ -3,6 +3,10 @@ import type { Msg } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
 
+// ToolTrail renders as a closed round card; its top and bottom border
+// rows are not part of any text measurement, so they are added explicitly.
+export const TOOL_TRAIL_BORDER_ROWS = 2
+
 const hashText = (text: string) => {
   let h = 5381
 
@@ -105,9 +109,24 @@ export const estimatedMsgHeight = (
     return Math.max(2, msg.todos.length + 2)
   }
 
-  const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
+  // User bubble / assistant card (messageLine): user text renders in a filled
+  // panel with paddingX 1 (−2 wrap columns); a non-blank assistant answer
+  // renders in a round-border box with paddingX 1 (−4 wrap columns, +2 border
+  // rows). Mirror both here or the estimate drifts from the mounted height.
+  const boxed = msg.role === 'assistant' && !msg.kind && /\S/.test(msg.text ?? '')
+  const bodyWidth = Math.max(
+    1,
+    transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE) -
+      (msg.role === 'user' && !msg.kind ? 2 : 0) -
+      (boxed ? 4 : 0),
+  )
   const text = msg.text
   let h = wrappedLines(text || ' ', bodyWidth)
+
+  if (boxed) {
+    // Top + bottom border rows of the assistant card.
+    h += 2
+  }
 
   if (!compact && msg.role === 'assistant') {
     // Paragraph gaps add up to 6 extra rows of breathing room. Slice
@@ -126,11 +145,11 @@ export const estimatedMsgHeight = (
     if (hasVisibleDetails) {
       h +=
         (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) +
-        (hasVisibleThinking ? (thinkingExpanded ? wrappedLines(msg.thinking ?? '', bodyWidth) : 1) : 0)
-
-      if (msg.role === 'assistant' && /\S/.test(msg.text)) {
-        h += 2
-      }
+        (hasVisibleThinking ? (thinkingExpanded ? wrappedLines(msg.thinking ?? '', bodyWidth) : 1) : 0) +
+        // ToolTrail is a closed round card (thinking.tsx): top + bottom
+        // border rows. Must stay in step with that border or virtual-scroll
+        // heights drift from mounted heights.
+        TOOL_TRAIL_BORDER_ROWS
     }
   }
 

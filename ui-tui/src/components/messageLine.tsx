@@ -6,16 +6,14 @@ import { LONG_MSG } from '../config/limits.js'
 import { hasLeadGap } from '../domain/blockLayout.js'
 import { splitComposerHighlights } from '../domain/composerHighlights.js'
 import { sectionMode } from '../domain/details.js'
-import { userDisplay } from '../domain/messages.js'
+import { userDisplayParts } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedLiveRenderText,
-  compactPreview,
   hasAnsi,
   isPasteBackedText,
-  sanitizeAnsiForRender,
-  stripAnsi
+  sanitizeAnsiForRender
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
@@ -102,6 +100,7 @@ export const MessageLine = memo(function MessageLine({
     return shouldShowThinkingTrail(msg, thinkingMode, toolsMode, activityMode) ? (
       <Box flexDirection="column" marginTop={leadGap ? 1 : 0}>
         <ToolTrail
+          cols={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
           commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
           preferExpandedThinking={liveDetails}
@@ -128,20 +127,25 @@ export const MessageLine = memo(function MessageLine({
   }
 
   if (msg.role === 'tool') {
-    const maxChars = Math.max(24, cols - 14)
-    const stripped = hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text
-    const safeAnsi = hasAnsi(msg.text) ? sanitizeAnsiForRender(msg.text) : msg.text
-    const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
+    const toolText = msg.text || '(empty tool result)'
+    const safeAnsi = hasAnsi(toolText) ? sanitizeAnsiForRender(toolText) : toolText
 
     return (
-      <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
-        {hasAnsi(msg.text) ? (
-          <Text wrap="truncate-end">
+      <Box
+        alignSelf="flex-start"
+        borderColor={t.color.muted}
+        borderStyle="round"
+        marginLeft={1}
+        paddingX={1}
+        width={Math.max(8, cols - 2)}
+      >
+        {hasAnsi(toolText) ? (
+          <Text wrap="wrap">
             <Ansi>{safeAnsi}</Ansi>
           </Text>
         ) : (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {preview}
+          <Text color={t.color.muted} wrap="wrap">
+            {toolText}
           </Text>
         )}
       </Box>
@@ -167,11 +171,14 @@ export const MessageLine = memo(function MessageLine({
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
   const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
+  // The card's own `╭` border already marks the turn boundary for a boxed
+  // (non-blank) assistant answer, so the gutter glyph would sit alone,
+  // detached from the card — a stray mark rather than part of it. Suppress
+  // it only for that case; every other role/kind keeps its usual glyph.
+  const isBoxedAssistant = msg.role === 'assistant' && !msg.kind && /\S/.test(msg.text)
 
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
-
-  const showResponseSeparator = shouldShowResponseSeparator(msg, showDetails)
 
   const content = (() => {
     if (msg.kind === 'slash') {
@@ -204,7 +211,12 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'assistant') {
-      const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)
+      // Assistant answers render inside a round-border box (web-chat card
+      // look): 2 border columns + paddingX 1 eat 4 columns of wrap width.
+      const bodyWidth = Math.max(
+        1,
+        transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE) - (msg.kind ? 0 : 4),
+      )
 
       return isStreaming ? (
         // Incremental markdown: split at the last stable block boundary so
@@ -217,15 +229,14 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
-      const [head, ...rest] = userDisplay(msg.text).split('[long message]')
+      const { head, marker } = userDisplayParts(msg.text)
 
       return (
         <Text color={body}>
           {head}
           <Text color={t.color.muted} dimColor>
-            [long message]
+            {marker}
           </Text>
-          {rest.join('')}
         </Text>
       )
     }
@@ -274,6 +285,7 @@ export const MessageLine = memo(function MessageLine({
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>
           <ToolTrail
+            cols={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
             commandOverride={detailsModeCommandOverride}
             detailsMode={detailsMode}
             preferExpandedThinking={liveDetails}
@@ -285,17 +297,6 @@ export const MessageLine = memo(function MessageLine({
             toolTokens={msg.toolTokens}
             trail={msg.tools}
           />
-        </Box>
-      )}
-
-      {showResponseSeparator && (
-        <Box marginBottom={1}>
-          <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-            <Text color={t.color.border}>└─ </Text>
-          </NoSelect>
-          <Text color={t.color.muted} dim>
-            Response
-          </Text>
         </Box>
       )}
 
@@ -313,18 +314,40 @@ export const MessageLine = memo(function MessageLine({
       <Box>
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
-            {glyph}{' '}
+            {isBoxedAssistant ? ' ' : `${glyph} `}
           </Text>
         </NoSelect>
 
-        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
+        {/* Web-chat card look, both sides of the turn:
+         * · user      — filled bubble in the selection tone (lightest surface,
+         *               ChatGPT-style emphasis on the prompt), paddingX 1
+         * · assistant — round-border card filled with the panel surface tone:
+         *               2 border cols + paddingX 1 eat 4 wrap columns
+         * Ink `width` is border-box (includes padding/borders — verified
+         * against the renderer), so the row's total width — and thus the
+         * virtual-scroll height math — is unchanged; the matching wrap-width
+         * adjustments live in virtualHeights.ts and the Md cols above. */}
+        <Box
+          backgroundColor={
+            msg.role === 'user' && !msg.kind
+              ? t.color.selectionBg
+              : msg.role === 'assistant' && !msg.kind && /\S/.test(msg.text)
+                ? t.color.completionBg
+                : undefined
+          }
+          borderColor={msg.role === 'assistant' && !msg.kind && /\S/.test(msg.text) ? t.color.border : undefined}
+          borderStyle={msg.role === 'assistant' && !msg.kind && /\S/.test(msg.text) ? 'round' : undefined}
+          paddingX={
+            (msg.role === 'user' || (msg.role === 'assistant' && /\S/.test(msg.text))) && !msg.kind ? 1 : 0
+          }
+          width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
+        >
+          {content}
+        </Box>
       </Box>
     </Box>
   )
 })
-
-export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
-  msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
 
 // A MoA reference block (msg.isMoaReference) is the user-facing
 // mixture-of-agents process the user opted into, not private model

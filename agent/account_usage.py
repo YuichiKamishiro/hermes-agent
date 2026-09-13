@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -92,6 +95,12 @@ def _format_reset(dt: Optional[datetime]) -> str:
     return f"{rel} ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
 
 
+def _usage_bar(used_percent: float, width: int = 10) -> str:
+    """`claude`'s own `/usage` bar style: N/10 filled blocks + shaded rest."""
+    filled = min(width, max(0, round(used_percent / 100 * width)))
+    return "█" * filled + "░" * (width - filled)
+
+
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
     if not snapshot:
         return []
@@ -105,9 +114,8 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
         if window.used_percent is None:
             base = f"{window.label}: unavailable"
         else:
-            remaining = max(0, round(100 - float(window.used_percent)))
             used = max(0, round(float(window.used_percent)))
-            base = f"{window.label}: {remaining}% remaining ({used}% used)"
+            base = f"{window.label} {_usage_bar(float(window.used_percent))} {used}% used"
         if window.reset_at:
             base += f" • resets {_format_reset(window.reset_at)}"
         elif window.detail:
@@ -771,25 +779,57 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         response.raise_for_status()
     payload = response.json() or {}
     windows: list[AccountUsageWindow] = []
-    mapping = (
-        ("five_hour", "Current session"),
-        ("seven_day", "Current week"),
-        ("seven_day_opus", "Opus week"),
-        ("seven_day_sonnet", "Sonnet week"),
-    )
-    for key, label in mapping:
-        window = payload.get(key) or {}
-        util = window.get("utilization")
-        if util is None:
+    # Anthropic's usage endpoint moved the real data into a `limits[]` list
+    # (kind: session/weekly_all/weekly_scoped, scope.model.display_name for
+    # the per-model row) — the legacy flat fields below (seven_day_opus,
+    # seven_day_sonnet) come back null under the new schema, which silently
+    # dropped the per-model weekly window and mislabeled the rest vs the
+    # real `claude` CLI's `/usage` (verified against `claude -p "/usage"`
+    # output, which reads `limits[]`). Prefer `limits[]`; fall back to the
+    # flat fields for older backends that still serve them.
+    limit_kind_labels = {
+        "session": "Current session",
+        "weekly_all": "Current week (all models)",
+    }
+    for entry in payload.get("limits") or []:
+        kind = entry.get("kind")
+        percent = entry.get("percent")
+        if percent is None:
             continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
+        if kind == "weekly_scoped":
+            model_name = ((entry.get("scope") or {}).get("model") or {}).get("display_name")
+            label = f"Current week ({model_name})" if model_name else "Current week (model)"
+        else:
+            label = limit_kind_labels.get(kind)
+        if not label:
+            continue
         windows.append(
             AccountUsageWindow(
                 label=label,
-                used_percent=used,
-                reset_at=_parse_dt(window.get("resets_at")),
+                used_percent=float(percent),
+                reset_at=_parse_dt(entry.get("resets_at")),
             )
         )
+    if not windows:
+        mapping = (
+            ("five_hour", "Current session"),
+            ("seven_day", "Current week"),
+            ("seven_day_opus", "Opus week"),
+            ("seven_day_sonnet", "Sonnet week"),
+        )
+        for key, label in mapping:
+            window = payload.get(key) or {}
+            util = window.get("utilization")
+            if util is None:
+                continue
+            used = float(util) * 100 if float(util) <= 1 else float(util)
+            windows.append(
+                AccountUsageWindow(
+                    label=label,
+                    used_percent=used,
+                    reset_at=_parse_dt(window.get("resets_at")),
+                )
+            )
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
     if extra.get("is_enabled"):
@@ -881,6 +921,127 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+KIMI_DEFAULT_BASE_URL = "https://api.kimi.com/coding/v1"
+
+
+def _kimi_window_label(window: dict) -> str:
+    """Human label for a Kimi rate-limit window descriptor."""
+    unit = str((window or {}).get("timeUnit") or "").upper()
+    try:
+        n = int((window or {}).get("duration"))
+    except (TypeError, ValueError):
+        return "Limit window"
+    if "MINUTE" in unit:
+        return f"{n // 60}-hour limit" if n % 60 == 0 else f"{n}-minute limit"
+    if "HOUR" in unit:
+        return f"{n}-hour limit"
+    if "DAY" in unit:
+        return f"{n}-day limit"
+    return "Limit window"
+
+
+def _kimi_usage_row(detail: dict) -> tuple[Optional[float], Optional[datetime], str]:
+    """(used_percent, reset_at, "used/limit") from a limit/used/remaining record."""
+    try:
+        used = float(detail.get("used"))
+        limit = float(detail.get("limit"))
+    except (TypeError, ValueError):
+        return None, _parse_dt(detail.get("resetTime")), ""
+    pct = (used / limit * 100.0) if limit > 0 else None
+    return pct, _parse_dt(detail.get("resetTime")), f"{int(used)}/{int(limit)} used"
+
+
+def _read_kimi_code_token() -> Optional[str]:
+    """Fresh access token from the Kimi Code CLI's shared credentials file."""
+    path = os.path.expanduser("~/.kimi-code/credentials/kimi-code.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            creds = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if float(creds.get("expires_at", 0)) - 60 <= time.time():
+        return None
+    token = creds.get("access_token")
+    return token if isinstance(token, str) and token.strip() else None
+
+
+def _fetch_kimi_account_usage(
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Kimi for Coding quota probe — mirrors the Kimi Code CLI's ``GET {base}/usages``."""
+    base = str(base_url or "").strip().rstrip("/") or KIMI_DEFAULT_BASE_URL
+    # key_cmd providers hand us a callable token source (CommandTokenSource) —
+    # invoke it per the wire-client contract. Plain strings pass through, and
+    # anything that doesn't look like a JWT falls back to the CLI creds file.
+    candidate = api_key
+    if callable(candidate):
+        try:
+            candidate = candidate()
+        except Exception:
+            candidate = ""
+    candidate = str(candidate or "").strip()
+    token = candidate if candidate.count(".") == 2 else ""
+    token = token or _read_kimi_code_token()
+    if not token:
+        return AccountUsageSnapshot(
+            provider="kimi", source="kimi", fetched_at=_utc_now(),
+            title="Kimi for Coding limits",
+            unavailable_reason="no access token (run the kimi CLI once to refresh login)",
+        )
+    try:
+        response = httpx.get(
+            f"{base}/usages",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=8.0,
+        )
+    except Exception as exc:
+        return AccountUsageSnapshot(
+            provider="kimi", source="kimi", fetched_at=_utc_now(),
+            title="Kimi for Coding limits",
+            unavailable_reason=f"usage probe failed: {exc}",
+        )
+    if response.status_code != 200:
+        return AccountUsageSnapshot(
+            provider="kimi", source="kimi", fetched_at=_utc_now(),
+            title="Kimi for Coding limits",
+            unavailable_reason=f"usage endpoint returned HTTP {response.status_code}",
+        )
+    try:
+        payload = response.json() or {}
+    except ValueError:
+        payload = {}
+
+    windows: list[AccountUsageWindow] = []
+    usage = payload.get("usage") or {}
+    if usage:
+        pct, reset, text = _kimi_usage_row(usage)
+        windows.append(AccountUsageWindow(f"Weekly limit ({text})", pct, reset))
+    for item in payload.get("limits") or []:
+        if not isinstance(item, dict):
+            continue
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else item
+        pct, reset, text = _kimi_usage_row(detail)
+        label = _kimi_window_label(item.get("window") or {})
+        windows.append(AccountUsageWindow(f"{label} ({text})", pct, reset))
+
+    details: list[str] = []
+    parallel = payload.get("parallel") or {}
+    if parallel:
+        active = len(parallel.get("details") or [])
+        details.append(f"Parallel sessions: {active}/{parallel.get('limit', '?')}")
+
+    membership = ((payload.get("user") or {}).get("membership") or {}).get("level")
+    return AccountUsageSnapshot(
+        provider="kimi", source="kimi", fetched_at=_utc_now(),
+        title="Kimi for Coding limits",
+        plan=_title_case_slug(membership),
+        windows=tuple(windows),
+        details=tuple(details),
+        unavailable_reason=None if windows else "usage endpoint returned no windows",
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -889,6 +1050,9 @@ def fetch_account_usage(
 ) -> Optional[AccountUsageSnapshot]:
     normalized = str(provider or "").strip().lower()
     if normalized in {"", "auto", "custom"}:
+        # Bare "custom" — identify well-known OAuth endpoints by their URL.
+        if normalized == "custom" and "kimi.com" in str(base_url or "").lower():
+            return _fetch_kimi_account_usage(base_url=base_url, api_key=api_key)
         return None
     try:
         if normalized == "openai-codex":
@@ -897,6 +1061,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized.startswith("kimi") or normalized.startswith("custom:kimi"):
+            return _fetch_kimi_account_usage(base_url=base_url, api_key=api_key)
     except Exception:
         return None
     return None

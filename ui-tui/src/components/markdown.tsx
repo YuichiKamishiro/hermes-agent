@@ -5,6 +5,7 @@ import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
+import { annotateUnifiedDiff, type UnifiedDiff, type UnifiedDiffLine } from '../lib/unifiedDiff.js'
 import type { Theme } from '../theme.js'
 
 // `\boxed{X}` regions in `texToUnicode` output are marked with the
@@ -210,7 +211,11 @@ export const stripInlineMarkup = (v: string) =>
 
 const SAFETY_MARGIN = 4
 const MIN_COL_WIDTH = 3
-const COL_GAP = 2 // the '  ' between columns
+// ' │ ' between columns: a thin vertical divider with a single space of
+// breathing room on each side, so column boundaries stay visible even on
+// long unbroken cell content or a plain-color terminal background — pure
+// whitespace gaps were easy to lose track of, especially on narrow columns.
+const COL_GAP = 3
 const TABLE_PADDING_LEFT = 2 // paddingLeft={2} on the outer <Box>
 
 const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
@@ -387,7 +392,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   }
 
   const isHard = totalMin > availableWidth // tier 3 needs hard word breaks
-  const sep = columnWidths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+  const sep = columnWidths.map(w => '─'.repeat(Math.max(1, w))).join('─┼─')
 
   // When wrapping isn't needed, build single-line strings per row.
   // All cells render as plain text via stripInlineMarkup.
@@ -399,7 +404,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
         .map((cell, ci) => {
           const text = stripInlineMarkup(cell)
           const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
-          const gap = ci < numCols - 1 ? '  ' : ''
+          const gap = ci < numCols - 1 ? ' │ ' : ''
 
           return text + pad + gap
         })
@@ -443,7 +448,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
         line += cellText + pad
 
         if (ci < numCols - 1) {
-          line += '  '
+          line += ' │ '
         }
       }
 
@@ -581,8 +586,14 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
       // Code is the one wrap that does NOT recurse — inline `code` spans
       // are verbatim by definition. Letting MdInline reprocess them
       // would corrupt regex examples and shell snippets.
+      // No `dimColor`: it isn't a real prop on this Text component (the
+      // real one is `dim`) — was silently a no-op — and even a working dim
+      // would fight the point of highlighting code at all. `syntaxString`
+      // reads clearly distinct from prose in every shipped theme, unlike
+      // `accent` which is near-identical to body text in grayscale skins
+      // (e.g. Sisyphus: accent #E7E7E7 vs text #D3D3D3).
       parts.push(
-        <Text color={t.color.accent} dimColor key={parts.length}>
+        <Text color={t.color.syntaxString} key={parts.length}>
           {m[7]}
         </Text>
       )
@@ -704,6 +715,144 @@ const cacheSet = (b: Map<string, ReactNode[]>, key: string, v: ReactNode[]) => {
   }
 }
 
+const highlightedDiffContent = (line: UnifiedDiffLine, lang: string, t: Theme, dim = false): ReactNode[] => {
+  const tokens = highlightLine(line.text, lang, t)
+  const changedBg = line.kind === 'add' ? t.color.diffAddedWord : t.color.diffRemovedWord
+  const parts: ReactNode[] = []
+  let offset = 0
+
+  for (const [color, text] of tokens) {
+    const tokenStart = offset
+    const tokenEnd = offset + text.length
+    const boundaries = [tokenStart, tokenEnd]
+
+    if (line.changed) {
+      const [changedStart, changedEnd] = line.changed
+
+      if (changedStart > tokenStart && changedStart < tokenEnd) {
+        boundaries.push(changedStart)
+      }
+
+      if (changedEnd > tokenStart && changedEnd < tokenEnd) {
+        boundaries.push(changedEnd)
+      }
+    }
+
+    boundaries.sort((a, b) => a - b)
+
+    for (let i = 0; i < boundaries.length - 1; i++) {
+      const start = boundaries[i]!
+      const end = boundaries[i + 1]!
+      const changed = Boolean(line.changed && start >= line.changed[0] && end <= line.changed[1])
+
+      parts.push(
+        <Text
+          backgroundColor={changed ? changedBg : undefined}
+          color={color || t.color.text}
+          dim={dim}
+          key={`${offset}-${i}`}
+        >
+          {text.slice(start - tokenStart, end - tokenStart)}
+        </Text>
+      )
+    }
+
+    offset = tokenEnd
+  }
+
+  return parts
+}
+
+// Diff presentation follows the Codex / Claude Code school:
+//   Update(file) +N -M          <- one operation header, not raw ---/+++
+//    41   context               <- right-aligned line numbers in a gutter
+//    42 - removed (dimmed)      <- removals recede...
+//    42 + added                 <- ...additions carry the visual weight
+// Raw `@@` hunk rows render as a thin `⋯` discontinuity marker between
+// hunks instead of the technical `@@ -a,b +c,d @@` text.
+const renderDiffLine = (
+  line: UnifiedDiffLine,
+  lang: string,
+  t: Theme,
+  key: number,
+  gutterWidth: number,
+  isFirstHunk: boolean
+) => {
+  if (line.kind === 'meta') {
+    return null
+  }
+
+  if (line.kind === 'hunk') {
+    // First hunk needs no separator — the header line already opens the
+    // block. Later hunks get a small discontinuity mark.
+    return isFirstHunk ? null : (
+      <Text color={t.color.muted} key={key}>
+        {' '.repeat(Math.max(0, gutterWidth - 1))}⋯
+      </Text>
+    )
+  }
+
+  const backgroundColor =
+    line.kind === 'add' ? t.color.diffAdded : line.kind === 'remove' ? t.color.diffRemoved : undefined
+  const markerColor =
+    line.kind === 'add' ? t.color.diffAddedFg : line.kind === 'remove' ? t.color.diffRemovedFg : t.color.muted
+  const isRemove = line.kind === 'remove'
+  const lineNo = line.kind === 'remove' ? line.oldLine : line.newLine
+  const gutter = `${lineNo ?? ''}`.padStart(gutterWidth)
+
+  return (
+    <Text backgroundColor={backgroundColor} key={key} wrap="wrap">
+      <Text color={t.color.muted} dim>
+        {gutter}
+      </Text>
+      <Text color={markerColor}>{` ${line.marker === ' ' ? ' ' : line.marker} `}</Text>
+      {highlightedDiffContent(line, lang, t, isRemove)}
+    </Text>
+  )
+}
+
+const DiffBlock = ({ diff, t }: { diff: UnifiedDiff; t: Theme }) => {
+  // Gutter sized to the widest line number in the block (min 2 for shape).
+  const maxLine = Math.max(
+    2,
+    ...diff.lines.map(line => Math.max(line.oldLine ?? 0, line.newLine ?? 0))
+  )
+  const gutterWidth = String(maxLine).length
+
+  let seenHunk = false
+
+  return (
+    <>
+      {(diff.file || diff.added > 0 || diff.removed > 0) && (
+        <Text key="header" wrap="truncate-end">
+          <Text bold color={t.color.text}>
+            Update
+          </Text>
+          <Text color={t.color.muted}>(</Text>
+          <Text color={t.color.accent}>{diff.file.split('/').at(-1) || diff.file || '?'}</Text>
+          <Text color={t.color.muted}>)</Text>
+          {'  '}
+          {/* Counter colors come from the diff-chrome foreground pair —
+              literal green/red in every skin (semantic ok/error can be
+              grayscale in monochrome skins like Sisyphus and must not be
+              used to summarize +/- rows). */}
+          <Text color={t.color.diffAddedFg}>+{diff.added}</Text>{' '}
+          <Text color={t.color.diffRemovedFg}>-{diff.removed}</Text>
+        </Text>
+      )}
+      {diff.lines.map((line, j) => {
+        const isFirstHunk = line.kind === 'hunk' && !seenHunk
+
+        if (line.kind === 'hunk') {
+          seenHunk = true
+        }
+
+        return renderDiffLine(line, diff.language, t, j, gutterWidth, isFirstHunk)
+      })}
+    </>
+  )
+}
+
 function MdImpl({ cols, compact, t, text }: MdProps) {
   const nodes = useMemo(() => {
     const bucket = cacheBucket(t)
@@ -727,8 +876,14 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       }
     }
 
+    // A kind change (heading -> para -> list -> para) used to insert a gap
+    // unconditionally, so `compact` only suppressed gaps for blank lines that
+    // did NOT coincide with a block boundary — i.e. almost none, which is why
+    // density mode looked like it did nothing. virtualHeights.ts already
+    // assumes compact means "no paragraph gaps" (`if (!compact && ...)`), so
+    // honouring it here also stops the estimator from undercounting.
     const start = (kind: Exclude<Kind, null | 'blank'>) => {
-      if (prevKind && prevKind !== 'blank' && prevKind !== kind) {
+      if (!compact && prevKind && prevKind !== 'blank' && prevKind !== kind) {
         gap()
       }
 
@@ -807,16 +962,23 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         start('code')
 
         const isDiff = lang === 'diff'
+        const diff = isDiff ? annotateUnifiedDiff(block) : null
         const highlighted = !isDiff && isHighlightable(lang)
 
         nodes.push(
-          <Box flexDirection="column" key={key} paddingLeft={2}>
-            {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
+          <Box flexDirection="column" key={key} paddingLeft={1}>
+            {lang && !isDiff && (
+              <Text color={t.color.muted} dimColor>
+                {lang}
+              </Text>
+            )}
 
-            {block.map((l, j) => {
+            {diff
+              ? <DiffBlock diff={diff} t={t} />
+              : block.map((l, j) => {
               if (highlighted) {
                 return (
-                  <Text key={j}>
+                  <Text key={j} wrap="wrap">
                     {highlightLine(l, lang, t).map(([color, text], kk) =>
                       color ? (
                         <Text color={color} key={kk}>
@@ -830,17 +992,8 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
                 )
               }
 
-              const add = isDiff && l.startsWith('+')
-              const del = isDiff && l.startsWith('-')
-              const hunk = isDiff && l.startsWith('@@')
-
               return (
-                <Text
-                  backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
-                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
-                  dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
-                  key={j}
-                >
+                <Text key={j} wrap="wrap">
                   {l}
                 </Text>
               )

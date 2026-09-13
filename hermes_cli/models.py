@@ -451,8 +451,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
-        "claude-fable-5",
+        # Current generation first — curated entries lead the picker (see the
+        # anthropic branch in provider_model_ids), so a stale order buries the
+        # newest flagships below deprecated 2025 snapshots.
+        "claude-fable-5-1",
+        "claude-opus-5",
         "claude-sonnet-5",
+        "claude-haiku-4-5-20251001",
+        "claude-fable-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -461,7 +467,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-5-20250929",
         "claude-opus-4-20250514",
         "claude-sonnet-4-20250514",
-        "claude-haiku-4-5-20251001",
     ],
     "deepseek": [
         "deepseek-v4-pro",

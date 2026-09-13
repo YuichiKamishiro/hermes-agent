@@ -126,7 +126,90 @@ describe('MessageLine', () => {
       .split('\n')
       .find(line => line.includes('Okay'))
 
-    expect(renderedLine).toContain('Ψ > Okay')
+    // The user bubble adds paddingX 1 inside the panel, so the body starts
+    // one column later than the bare glyph row.
+    expect(renderedLine).toContain('Ψ >  Okay')
+  })
+
+  it('does not draw a lone gutter glyph beside a boxed (non-empty) assistant card', () => {
+    // messageLine renders a `╭...╮` card for a non-blank assistant answer.
+    // The gutter tool_prefix glyph (Sisyphus: '│') predates that card and
+    // used to sit alone in the gutter column, detached from the card's own
+    // border — it read as a stray mark, not part of the card. The card's
+    // own `╭` already marks the turn boundary, so the gutter column must
+    // stay blank for a boxed assistant row.
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const t = { ...DEFAULT_THEME, brand: { ...DEFAULT_THEME.brand, tool: '│' } }
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 80,
+        msg: { role: 'assistant', text: 'Readable response' },
+        t
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: stdout as unknown as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const rendered = stripAnsi(output)
+    const cardLine = rendered.split('\n').find(line => line.includes('╭'))
+
+    expect(cardLine).toBeDefined()
+    // The gutter column (left of the card) must be blank, not carry the
+    // lone tool_prefix glyph.
+    expect(cardLine?.slice(0, cardLine.indexOf('╭'))).not.toContain('│')
+  })
+
+  it('wraps standalone tool results without dropping their tail', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+    const payload = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+
+    Object.assign(stdout, { columns: 24, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 24,
+        msg: { role: 'tool', text: payload },
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: stdout as unknown as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    expect(stripAnsi(output).replace(/[╭╮╰╯│─\s]/g, '')).toContain(payload)
   })
 
   it('keeps historical thinking blocks collapsed by default', () => {

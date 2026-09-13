@@ -243,7 +243,7 @@ function Chevron({
   suffix?: string
   t: Theme
   title: string
-  tone?: 'dim' | 'error' | 'warn'
+  tone?: 'dim' | 'error' | 'normal' | 'warn'
 }) {
   const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.muted
 
@@ -675,6 +675,7 @@ interface Group {
 
 export const ToolTrail = memo(function ToolTrail({
   busy = false,
+  cols,
   commandOverride = false,
   detailsMode = 'collapsed',
   outcome = '',
@@ -693,6 +694,8 @@ export const ToolTrail = memo(function ToolTrail({
   activity = []
 }: {
   busy?: boolean
+  /* Border-box width of the card. Undefined (tests/harness) shrink-wraps. */
+  cols?: number
   commandOverride?: boolean
   detailsMode?: DetailsMode
   outcome?: string
@@ -838,7 +841,6 @@ export const ToolTrail = memo(function ToolTrail({
         pushDetail({
           color: parsed.mark === '✗' ? t.color.error : t.color.muted,
           content: parsed.detail,
-          dimColor: parsed.mark !== '✗',
           key: `tr-${i}-d`
         })
       }
@@ -1095,6 +1097,7 @@ export const ToolTrail = memo(function ToolTrail({
           suffix={toolTokensLabel}
           t={t}
           title="Tool calls"
+          tone="normal"
         />
       ),
       key: 'tools',
@@ -1215,34 +1218,29 @@ export const ToolTrail = memo(function ToolTrail({
     })
   }
 
-  const topCount = panels.length + (totalTokensLabel ? 1 : 0)
-
   return (
-    <Box flexDirection="column">
-      {panels.map((panel, index) => (
-        <TreeNode
-          branch={index === topCount - 1 ? 'last' : 'mid'}
-          header={panel.header}
-          key={panel.key}
-          open={panel.open}
-          t={t}
-        >
-          {panel.render}
-        </TreeNode>
+    /* Closed card, mirroring the assistant message card in messageLine.tsx
+     * (round border + paddingX 1 + same transcriptBodyWidth) so a turn reads
+     * as two sibling cards instead of a card next to a bare gutter rail.
+     * The +2 rows this adds are mirrored in virtualHeights.ts. */
+    <Box
+      borderColor={t.color.border}
+      borderStyle="round"
+      flexDirection="column"
+      paddingX={1}
+      width={cols}
+    >
+      {panels.map(panel => (
+        <Box flexDirection="column" key={panel.key}>
+          {panel.header}
+          {panel.open ? panel.render([]) : null}
+        </Box>
       ))}
       {totalTokensLabel ? (
-        <TreeTextRow
-          branch="last"
-          color={t.color.statusFg}
-          content={
-            <>
-              <Text color={t.color.accent}>Σ </Text>
-              {totalTokensLabel}
-            </>
-          }
-          dimColor
-          t={t}
-        />
+        <Text color={t.color.statusFg} dim>
+          <Text color={t.color.accent}>Σ </Text>
+          {totalTokensLabel}
+        </Text>
       ) : null}
       {outcome ? (
         <Box marginTop={1}>

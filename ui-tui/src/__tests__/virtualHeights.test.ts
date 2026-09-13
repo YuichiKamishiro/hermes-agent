@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { estimatedMsgHeight, messageHeightKey, wrappedLines } from '../lib/virtualHeights.js'
+import { TOOL_TRAIL_BORDER_ROWS, estimatedMsgHeight, messageHeightKey, wrappedLines } from '../lib/virtualHeights.js'
 import type { Msg } from '../types.js'
 
 describe('virtual height estimates', () => {
@@ -21,7 +21,9 @@ describe('virtual height estimates', () => {
     // cols must clear the 20-col body-width floor for both prompts (gutter +
     // horizontalReserve=4) so the wider 'Ψ >' prompt actually narrows the
     // body enough to wrap an extra line vs the single-cell '❯' prompt.
-    const msg: Msg = { role: 'user', text: 'x'.repeat(23) }
+    // User bubble: messageLine adds paddingX 1 inside the body width, so the
+    // effective wrap width is 2 columns narrower than the raw body width.
+    const msg: Msg = { role: 'user', text: 'x'.repeat(21) }
 
     expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
     expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
@@ -43,11 +45,18 @@ describe('virtual height estimates', () => {
     )
   })
 
-  it('accounts for the response separator when assistant details are visible', () => {
-    const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'plan' }
+  it('adds only the detail rows themselves — no response-separator rows', () => {
+    // The old `· Response` separator (3 extra rows per assistant message
+    // with visible details) was removed as visual noise: with several tool
+    // segments per turn it repeated before every segment. Heights must now
+    // count ONLY the tool/thinking rows — plus the ToolTrail card's own two
+    // border rows, since that panel is a closed round card (thinking.tsx).
+    const msg: Msg = { role: 'assistant', text: 'ok', tools: ['Tool A'] }
 
     expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(
-      estimatedMsgHeight(msg, 80, { compact: false, details: false }) + 3
+      estimatedMsgHeight(msg, 80, { compact: false, details: false }) +
+        msg.tools!.length +
+        TOOL_TRAIL_BORDER_ROWS
     )
   })
 

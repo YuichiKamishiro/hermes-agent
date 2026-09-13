@@ -9,7 +9,7 @@ import type { TodoItem } from '../types.js'
 const rowColor = (t: Theme, status: TodoItem['status']) => {
   const tone = todoTone(status)
 
-  return tone === 'active' ? t.color.text : tone === 'body' ? t.color.statusFg : t.color.muted
+  return tone === 'active' ? t.color.accent : tone === 'body' ? t.color.text : t.color.muted
 }
 
 export const TodoPanel = memo(function TodoPanel({
@@ -80,8 +80,10 @@ export const TodoPanel = memo(function TodoPanel({
             const color = rowColor(t, todo.status)
 
             return (
-              <Text color={color} dim={tone === 'dim'} key={todo.id}>
-                <Text color={color}>{todoGlyph(todo.status)} </Text>
+              <Text bold={tone === 'active'} color={color} dim={tone === 'dim'} key={todo.id}>
+                <Text bold={tone === 'active'} color={color}>
+                  {todoGlyph(todo.status)}{' '}
+                </Text>
                 {todo.content}
               </Text>
             )

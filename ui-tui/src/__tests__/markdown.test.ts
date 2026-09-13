@@ -66,6 +66,45 @@ const renderPlain = (node: React.ReactNode) => {
     .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
 }
 
+const renderAnsi = (text: string, t = DEFAULT_THEME) => {
+  const savedLevel = chalk.level
+  chalk.level = 3
+
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns: 80, isTTY: true, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(
+    React.createElement(Box, { width: 70 }, React.createElement(Md, { cols: 68, t, text })),
+    {
+      patchConsole: false,
+      stderr: stderr as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream
+    }
+  )
+
+  instance.unmount()
+  instance.cleanup()
+  chalk.level = savedLevel
+
+  return output
+}
+
+const rgbSgr = (hex: string, background = false) => {
+  const rgb = hex.match(/[\da-f]{2}/gi)?.map(part => Number.parseInt(part, 16)) ?? []
+
+  return `${ESC}[${background ? 48 : 38};2;${rgb.join(';')}m`
+}
+
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
     expect(matches('say _hi_ there')).toEqual(['_hi_'])
@@ -270,6 +309,117 @@ describe('Md wrapping', () => {
   })
 })
 
+describe('unified diff rendering', () => {
+  const t = {
+    ...DEFAULT_THEME,
+    color: {
+      ...DEFAULT_THEME.color,
+      diffAdded: '#123456',
+      diffAddedWord: '#234567',
+      diffRemoved: '#654321',
+      diffRemovedWord: '#765432',
+      syntaxKeyword: '#abcdef'
+    }
+  }
+
+  it('layers syntax color and intraline backgrounds over subtle line backgrounds', () => {
+    const output = renderAnsi(
+      ['```diff', '--- a/config.cpp', '+++ b/config.cpp', '@@ -1 +1 @@', '-const auto timeout = 1000;', '+const auto timeout = 1500;', '```'].join('\n'),
+      t
+    )
+
+    expect(output).toContain(rgbSgr(t.color.diffRemoved, true))
+    expect(output).toContain(rgbSgr(t.color.diffAdded, true))
+    expect(output).toContain(rgbSgr(t.color.diffRemovedWord, true))
+    expect(output).toContain(rgbSgr(t.color.diffAddedWord, true))
+    expect(output).toContain(rgbSgr(t.color.syntaxKeyword))
+  })
+
+  it('replaces raw diff headers with an Update(file) summary line', () => {
+    // Codex/Claude-Code-style presentation: `--- a/x`, `+++ b/x`, and `@@`
+    // hunk rows are technical chrome — the reader gets one header naming
+    // the operation, the file, and the +N -M scale of the change instead.
+    const plain = stripAnsi(
+      renderAnsi(
+        ['```diff', '--- a/config.cpp', '+++ b/config.cpp', '@@ -1 +1 @@', '-int t = 1;', '+int t = 2;', '```'].join(
+          '\n'
+        ),
+        t
+      )
+    )
+
+    expect(plain).toContain('Update(config.cpp)')
+    expect(plain).toContain('+1')
+    expect(plain).toContain('-1')
+    expect(plain).not.toContain('--- a/config.cpp')
+    expect(plain).not.toContain('+++ b/config.cpp')
+    expect(plain).not.toMatch(/@@ -1/)
+  })
+
+  it('paints the +N/-M counters with the literal diff green/red pair', () => {
+    // NOT semantic ok/error: monochrome skins (Sisyphus) repaint those gray,
+    // and the counters must echo the actual +/- row colors in any skin.
+    const output = renderAnsi(
+      ['```diff', '--- a/f.cpp', '+++ b/f.cpp', '@@ -1 +1 @@', '-int t = 1;', '+int t = 2;', '```'].join('\n'),
+      t
+    )
+
+    expect(output).toContain(rgbSgr(t.color.diffAddedFg))
+    expect(output).toContain(rgbSgr(t.color.diffRemovedFg))
+  })
+
+  it('prefixes diff content rows with right-aligned line numbers', () => {
+    const plain = stripAnsi(
+      renderAnsi(
+        ['```diff', '--- a/f.cpp', '+++ b/f.cpp', '@@ -41,3 +41,3 @@', ' int a;', '-int b = 1;', '+int b = 2;', ' int c;', '```'].join(
+          '\n'
+        ),
+        t
+      )
+    )
+
+    // Context rows carry the new-side number; the replaced pair shares the
+    // same number on both sides (old for `-`, new for `+`).
+    expect(plain).toMatch(/41\s+int a;/)
+    expect(plain).toMatch(/42\s*-\s*int b = 1;/)
+    expect(plain).toMatch(/42\s*\+\s*int b = 2;/)
+    expect(plain).toMatch(/43\s+int c;/)
+  })
+
+  it('dims removed lines so additions carry the visual weight', () => {
+    const output = renderAnsi(
+      ['```diff', '--- a/f.cpp', '+++ b/f.cpp', '@@ -1 +1 @@', '-int old_line = 1;', '+int new_line = 2;', '```'].join(
+        '\n'
+      ),
+      t
+    )
+
+    // Dim must sit on the removed CONTENT text. The line-number gutter is
+    // dim by design on every row, so anchor the check between the row's
+    // marker (`- ` / `+ `) and its content instead of the whole row: after
+    // the marker, a removed row re-enters dim for its code spans, an added
+    // row must not.
+    const removedMarker = output.indexOf('- ', output.indexOf(rgbSgr(t.color.diffRemoved, true)))
+    const addedMarker = output.indexOf('+ ', output.indexOf(rgbSgr(t.color.diffAdded, true)))
+
+    expect(removedMarker).toBeGreaterThanOrEqual(0)
+    expect(addedMarker).toBeGreaterThanOrEqual(0)
+
+    const removedRow = output.slice(removedMarker, output.indexOf('old_line'))
+    const addedRow = output.slice(addedMarker, output.indexOf('new_line'))
+
+    expect(removedRow).toContain(`${ESC}[2m`)
+    expect(addedRow).not.toContain(`${ESC}[2m`)
+  })
+
+  it('does not paint file headers as removed or added code', () => {
+    const output = renderAnsi(['```diff', '--- a/config.cpp', '+++ b/config.cpp', '```'].join('\n'), t)
+
+    expect(output).not.toContain(rgbSgr(t.color.diffRemoved, true))
+    expect(output).not.toContain(rgbSgr(t.color.diffAdded, true))
+  })
+})
+
 describe('Md link labels', () => {
   it('renders bare URLs with readable slug labels', () => {
     const lines = renderPlain(
@@ -368,6 +518,70 @@ describe('renderTable CJK width alignment', () => {
     // The CJK row is the one that drifted before the fix.  It must
     // align with the rest now.
     expect(qwenCol2).toBe(headerCol2)
+  })
+})
+
+describe('renderTable column separators', () => {
+  it('draws a vertical divider between columns, not just whitespace', () => {
+    // Pure-whitespace column gaps blend into the terminal background on
+    // narrow/long cells, making it hard to tell where one column ends and
+    // the next begins. A thin `│` divider (GitHub/terminal-table style)
+    // must sit between every pair of adjacent columns on every data row.
+    const md = ['| Interface | Purpose |', '|-----------|---------|', '| X1 | control |', '| X2 | event |'].join(
+      '\n'
+    )
+
+    const lines = renderPlain(
+      React.createElement(Box, { width: 60 }, React.createElement(Md, { compact: true, t: DEFAULT_THEME, text: md }))
+    ).filter(line => line.trim().length > 0)
+
+    const x1Line = lines.find(line => line.includes('X1'))
+    const x2Line = lines.find(line => line.includes('X2'))
+    const headerLine = lines.find(line => line.includes('Interface'))
+
+    expect(headerLine).toContain('│')
+    expect(x1Line).toContain('│')
+    expect(x2Line).toContain('│')
+  })
+})
+
+describe('code fence language label', () => {
+  it('does not render the language name as a dim leading dash', () => {
+    // '─ python' reads as a stray dash artifact, not a readable label — the
+    // language name must not be prefixed by the decorative rule character.
+    const output = renderAnsi(['```python', 'x = 1', '```'].join('\n'))
+    const plain = stripAnsi(output)
+
+    expect(plain).toContain('python')
+    expect(plain).not.toMatch(/─\s*python/)
+  })
+
+  it('gives the language label its own readable tone, distinct from muted comment text', () => {
+    const t = {
+      ...DEFAULT_THEME,
+      color: { ...DEFAULT_THEME.color, muted: '#666666', syntaxComment: '#888888' }
+    }
+    const output = renderAnsi(['```python', 'x = 1', '```'].join('\n'), t)
+
+    // The label must be colored at all (not left to the terminal default),
+    // and must not silently reuse the exact same muted tone that lets it
+    // blend into a plain divider line.
+    expect(output).toContain(rgbSgr(t.color.muted))
+  })
+})
+
+describe('inline code emphasis', () => {
+  it('highlights inline code with a color distinct from prose, not a no-op dim', () => {
+    // `color={accent} dimColor` was doubly broken: `dimColor` isn't a real
+    // prop on this Text component (the real one is `dim`), so it silently
+    // did nothing, AND `accent` sits too close to body text in grayscale
+    // skins (Sisyphus: accent #E7E7E7 vs text #D3D3D3) to read as
+    // highlighted at all. `syntaxString` is the theme's dedicated
+    // code-highlight tone and must differ from both `text` and `accent`.
+    const output = renderAnsi('use `variable_name` here')
+
+    expect(output).toContain(rgbSgr(DEFAULT_THEME.color.syntaxString))
+    expect(DEFAULT_THEME.color.syntaxString.toLowerCase()).not.toBe(DEFAULT_THEME.color.text.toLowerCase())
   })
 })
 

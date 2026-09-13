@@ -3660,13 +3660,21 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
     # Use a placeholder key — the OpenAI SDK requires a non-empty string but
     # local servers ignore the Authorization header.  Same fix as cli.py
     # _ensure_runtime_credentials() (PR #2556).
-    if not isinstance(custom_key, str) or not custom_key.strip():
+    # A callable api_key (key_cmd / Entra ID token provider) is already a
+    # valid credential — the OpenAI SDK invokes it per request; pass through.
+    if callable(custom_key) and not isinstance(custom_key, str):
+        pass
+    elif not isinstance(custom_key, str) or not custom_key.strip():
         custom_key = "no-key-required"
 
     if not isinstance(custom_mode, str) or not custom_mode.strip():
         custom_mode = None
 
-    return custom_base, custom_key.strip(), custom_mode
+    return (
+        custom_base,
+        custom_key if callable(custom_key) else custom_key.strip(),
+        custom_mode,
+    )
 
 
 def _current_custom_base_url() -> str:
@@ -6048,6 +6056,22 @@ def _resolve_auto_route(
         resolved_provider = main_provider
         explicit_base_url = runtime_base_url or None
         explicit_api_key = None
+        # The live main runtime flattens a named custom provider to
+        # provider="custom" + base_url + api_key, keeping the durable
+        # ``custom:<name>`` identity only in ``requested_provider``.  When
+        # that name still has a configured entry, restore it so the request
+        # lands in the named-custom arm of resolve_provider_client — the
+        # anonymous arm assumes a string api_key and breaks on callable
+        # token providers (key_cmd / Entra ID).
+        if main_provider == "custom":
+            _requested_provider = str(runtime.get("requested_provider") or "")
+            if _requested_provider.startswith("custom:"):
+                try:
+                    from hermes_cli.runtime_provider import _get_named_custom_provider
+                    if _get_named_custom_provider(_requested_provider) is not None:
+                        main_provider = _requested_provider
+                except ImportError:
+                    pass
         if runtime_base_url and main_provider == "custom":
             # Anonymous custom endpoint (OPENAI_BASE_URL / config.model.base_url)
             # — pass through with explicit base_url + api_key.
@@ -6599,8 +6623,15 @@ def resolve_provider_client(
             custom_base = _to_openai_base_url(explicit_base_url).strip()
             if api_mode == "anthropic_messages":
                 wrap_base = (explicit_base_url or "").strip().rstrip("/")
+            # Callable token providers (key_cmd / Entra ID) are valid
+            # explicit keys — the OpenAI SDK invokes them per request.
+            _explicit_key = (
+                explicit_api_key
+                if callable(explicit_api_key) and not isinstance(explicit_api_key, str)
+                else (explicit_api_key or "").strip()
+            )
             custom_key = (
-                (explicit_api_key or "").strip()
+                _explicit_key
                 or _scoped_key_env("OPENAI_API_KEY")
                 or _read_main_api_key_if_same_host(custom_base)
                 or "no-key-required"  # local servers don't need auth
@@ -6619,7 +6650,14 @@ def resolve_provider_client(
             # OpenRouter or a wrong API-key provider — the main agent already
             # solved this, we just need to reuse its answer. (#45472)
             _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
-            _main_key = str(main_runtime.get("api_key") or "").strip()
+            # Preserve a callable api_key (key_cmd / Entra ID token
+            # provider) as-is; str() would turn it into a garbage bearer.
+            _main_key_raw = main_runtime.get("api_key")
+            _main_key = (
+                _main_key_raw
+                if callable(_main_key_raw) and not isinstance(_main_key_raw, str)
+                else str(_main_key_raw or "").strip()
+            )
             if _main_base and _main_key:
                 custom_base = _main_base
                 custom_key = _main_key

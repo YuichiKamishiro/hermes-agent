@@ -212,7 +212,7 @@ describe('StatusRule session count click target', () => {
       busy: false,
       cols: 100,
       cwdLabel: '~/repo',
-      liveSessionCount: 1,
+      liveSessionCount: 2,
       model: 'kimi-k2.6',
       onSessionCountClick: openSwitcher,
       sessionStartedAt: null,
@@ -224,11 +224,32 @@ describe('StatusRule session count click target', () => {
       voiceLabel: ''
     })
 
-    const clickableSessionCount = findClickableWithText(element, '1 session')
+    const clickableSessionCount = findClickableWithText(element, '2 sessions')
 
     expect(clickableSessionCount).not.toBeNull()
     clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
     expect(openSwitcher).toHaveBeenCalledOnce()
+  })
+
+  it('hides the segment entirely for a single session (resting state, no info)', () => {
+    const element = StatusRule({
+      bgCount: 0,
+      busy: false,
+      cols: 100,
+      cwdLabel: '~/repo',
+      liveSessionCount: 1,
+      model: 'kimi-k2.6',
+      onSessionCountClick: vi.fn(),
+      sessionStartedAt: null,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { total: 0 },
+      voiceLabel: ''
+    })
+
+    expect(textContent(element)).not.toContain('1 session')
   })
 
   it('keeps status + model and drops the low-value tail on a narrow terminal', () => {

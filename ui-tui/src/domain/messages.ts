@@ -4,16 +4,28 @@ import type { Msg, SessionInfo } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 
-export const userDisplay = (text: string) => {
+/** One-line summary of a long user message, split so callers can style the
+ *  marker separately from the head: `head` is the first words of the prompt,
+ *  `marker` a compact `… +N.Nk chars` tail (never the stub-looking
+ *  `[long message]`). Short messages return marker ''. */
+export const userDisplayParts = (text: string): { head: string; marker: string } => {
   if (text.length <= LONG_MSG) {
-    return text
+    return { head: text, marker: '' }
   }
 
   const first = text.split('\n')[0]?.trim() ?? ''
   const words = first.split(/\s+/).filter(Boolean)
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
+  const rest = text.length - prefix.length
+  const restLabel = rest >= 1000 ? `${(rest / 1000).toFixed(1)}k` : `${rest}`
 
-  return `${prefix || '(message)'} [long message]`
+  return { head: prefix || '(message)', marker: ` … +${restLabel} chars` }
+}
+
+export const userDisplay = (text: string) => {
+  const { head, marker } = userDisplayParts(text)
+
+  return `${head}${marker}`
 }
 
 export const toTranscriptMessages = (rows: unknown): Msg[] => {

@@ -700,6 +700,15 @@ export const sessionCommands: SlashCommand[] = [
           }
         }
 
+        // Provider account limits (Kimi quota etc.) — agent-independent, so it
+        // renders even with zero API calls. First line is the 📈 header, which
+        // becomes the panel title.
+        const accountLines = r?.account_lines ?? []
+        if (accountLines.length) {
+          const [accountTitle, ...accountRest] = accountLines
+          ctx.transcript.panel(accountTitle.replace(/^📈\s*/, ''), [{ text: accountRest.join('\n') }])
+        }
+
         if (!r?.calls) {
           if (!showedBalance) {
             sys('no API calls yet')
@@ -709,7 +718,6 @@ export const sessionCommands: SlashCommand[] = [
 
           return
         }
-
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()
 
         const rows: [string, string][] = [

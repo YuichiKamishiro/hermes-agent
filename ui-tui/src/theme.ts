@@ -23,11 +23,19 @@ export interface ThemeColors {
   /** Reasoning/thinking body text. Defaults to `muted`. */
   thinking: string
 
-  /** Code-block syntax highlight. Default to accent/text/border/muted. */
+  /** Code-block syntax highlight. Default to a GitHub-style editor palette. */
   syntaxString: string
   syntaxNumber: string
   syntaxKeyword: string
   syntaxComment: string
+  /** Function/method names at a call or definition site. */
+  syntaxFunction: string
+  /** Type names, classes, and language built-in types. */
+  syntaxType: string
+  /** Operators (`=`, `=>`, `+`, `&&`). */
+  syntaxOperator: string
+  /** Brackets, braces, separators. */
+  syntaxPunctuation: string
 
   prompt: string
   sessionLabel: string
@@ -45,6 +53,11 @@ export interface ThemeColors {
   diffRemoved: string
   diffAddedWord: string
   diffRemovedWord: string
+  /** Foreground green/red for diff chrome (markers, +N/-M counters) — always
+   *  literal green/red even in monochrome skins, tuned for text contrast
+   *  (the *Word tones are backgrounds, too dark to read as foreground). */
+  diffAddedFg: string
+  diffRemovedFg: string
 
   shellDollar: string
 }
@@ -304,14 +317,44 @@ const DIFF_DARK = {
   diffAdded: 'rgb(220,255,220)',
   diffRemoved: 'rgb(255,220,220)',
   diffAddedWord: 'rgb(36,138,61)',
-  diffRemovedWord: 'rgb(207,34,46)'
+  diffRemovedWord: 'rgb(207,34,46)',
+  diffAddedFg: '#57ab5a',
+  diffRemovedFg: '#e5534b'
 }
 
 const DIFF_LIGHT = {
   diffAdded: 'rgb(200,240,200)',
   diffRemoved: 'rgb(240,200,200)',
   diffAddedWord: 'rgb(27,94,32)',
-  diffRemovedWord: 'rgb(183,28,28)'
+  diffRemovedWord: 'rgb(183,28,28)',
+  diffAddedFg: '#1a7f37',
+  diffRemovedFg: '#cf222e'
+}
+
+// Syntax palettes — GitHub Dark/Light editor tokens. Brand-token defaults made
+// keyword ≈ border and number ≈ text, so a code block read as one flat colour;
+// these give each token class its own hue while staying WCAG-legible on both
+// polarities. Every value is still overridable via the `syntax_*` skin keys.
+const SYNTAX_DARK = {
+  syntaxString: '#a5d6ff',
+  syntaxNumber: '#79c0ff',
+  syntaxKeyword: '#ff7b72',
+  syntaxComment: '#8b949e',
+  syntaxFunction: '#d2a8ff',
+  syntaxType: '#7ee787',
+  syntaxOperator: '#ff7b72',
+  syntaxPunctuation: '#8b949e'
+}
+
+const SYNTAX_LIGHT = {
+  syntaxString: '#0a3069',
+  syntaxNumber: '#0550ae',
+  syntaxKeyword: '#cf222e',
+  syntaxComment: '#6e7781',
+  syntaxFunction: '#8250df',
+  syntaxType: '#116329',
+  syntaxOperator: '#cf222e',
+  syntaxPunctuation: '#6e7781'
 }
 
 export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
@@ -341,12 +384,11 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     tool: seeds.accent,
     thinking: muted,
 
-    // Code-syntax tokens default to brand tokens (unchanged highlighting)
-    // but are independently skinnable.
-    syntaxString: seeds.accent,
-    syntaxNumber: seeds.text,
-    syntaxKeyword: seeds.border ?? tones.border,
-    syntaxComment: muted,
+    // Code-syntax tokens: a real editor palette (GitHub Dark/Light) instead of
+    // reusing brand tokens — those collapsed keyword→border and number→text,
+    // so most code read as one flat colour. Still fully skinnable via
+    // `syntax_*` keys; only the DEFAULT changed.
+    ...(isLight ? SYNTAX_LIGHT : SYNTAX_DARK),
 
     prompt: seeds.prompt ?? seeds.text,
     // sessionLabel/sessionBorder track the muted tone — "same role, same
@@ -923,11 +965,17 @@ export function fromSkin(
     diffRemoved: c('diff_removed') ?? derived.diffRemoved,
     diffAddedWord: c('diff_added_word') ?? derived.diffAddedWord,
     diffRemovedWord: c('diff_removed_word') ?? derived.diffRemovedWord,
+    diffAddedFg: c('diff_added_fg') ?? derived.diffAddedFg,
+    diffRemovedFg: c('diff_removed_fg') ?? derived.diffRemovedFg,
     // Code-syntax tokens: overridable, else the derived brand-token defaults.
     syntaxString: c('syntax_string') ?? derived.syntaxString,
     syntaxNumber: c('syntax_number') ?? derived.syntaxNumber,
     syntaxKeyword: c('syntax_keyword') ?? derived.syntaxKeyword,
-    syntaxComment: c('syntax_comment') ?? c('banner_dim') ?? derived.syntaxComment
+    syntaxComment: c('syntax_comment') ?? c('banner_dim') ?? derived.syntaxComment,
+    syntaxFunction: c('syntax_function') ?? derived.syntaxFunction,
+    syntaxType: c('syntax_type') ?? derived.syntaxType,
+    syntaxOperator: c('syntax_operator') ?? derived.syntaxOperator,
+    syntaxPunctuation: c('syntax_punctuation') ?? derived.syntaxPunctuation
   }
 
   // 4. Guard: contrast floors against the real background + fill polarity.

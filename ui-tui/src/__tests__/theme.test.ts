@@ -589,7 +589,7 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(fallback.color.thinking).toBe(fallback.color.muted)
   })
 
-  it('gives code syntax its own keys, defaulting to accent/text/border/muted', async () => {
+  it('gives code syntax its own keys, defaulting to an editor palette', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 
     const themed = fromSkin(
@@ -602,8 +602,33 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(themed.color.syntaxKeyword).toBe('#0000aa')
     expect(themed.color.syntaxComment).toBe('#888888')
 
+    // Syntax tokens no longer track brand colours. Tying string→accent and
+    // keyword→border collapsed most code to a single hue (keyword and border
+    // are the same value in many skins); the defaults are now a real editor
+    // palette, so changing the accent must NOT repaint code.
     const fallback = fromSkin({ ui_accent: '#abcdef' }, {})
-    expect(fallback.color.syntaxString).toBe('#abcdef') // string follows accent
+    expect(fallback.color.syntaxString).not.toBe('#abcdef')
+
+    // Each token class must be visually distinct — the bug this replaced.
+    const distinct = new Set([
+      fallback.color.syntaxString,
+      fallback.color.syntaxNumber,
+      fallback.color.syntaxKeyword,
+      fallback.color.syntaxComment,
+      fallback.color.syntaxFunction,
+      fallback.color.syntaxType
+    ])
+    expect(distinct.size).toBeGreaterThanOrEqual(5)
+
+    // New token classes are skinnable too.
+    const extra = fromSkin(
+      { syntax_function: '#111111', syntax_type: '#222222', syntax_operator: '#333333', syntax_punctuation: '#444444' },
+      {}
+    )
+    expect(extra.color.syntaxFunction).toBe('#111111')
+    expect(extra.color.syntaxType).toBe('#222222')
+    expect(extra.color.syntaxOperator).toBe('#333333')
+    expect(extra.color.syntaxPunctuation).toBe('#444444')
   })
 
   it('lets skins override diff colors', async () => {

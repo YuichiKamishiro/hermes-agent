@@ -6618,6 +6618,24 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload["result"] = json.loads(result)
     except Exception:
         payload["result"] = result
+    # `payload["error"]` elsewhere in this module carries a TURN-level failure
+    # (the LLM request itself errored) — this is a distinct, tool-level
+    # signal: the tool ran fine but its own outcome failed (terminal
+    # exit_code != 0, a JSON {"error": ...} result). Reuses the same
+    # detector the classic-CLI quiet-mode printer already trusts
+    # (_get_cute_tool_message), so terminal/JSON-error semantics stay in
+    # ONE place instead of drifting between two reimplementations. Only set
+    # when not already carrying a turn-level error, so a real turn failure
+    # is never silently overwritten by a milder tool-outcome one.
+    if not payload.get("error"):
+        try:
+            from agent.display import _detect_tool_failure
+
+            is_failure, _suffix = _detect_tool_failure(name, result)
+            if is_failure:
+                payload["error"] = "tool reported a non-zero/failed outcome"
+        except Exception:
+            pass
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
@@ -6633,17 +6651,20 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         except Exception:
             pass
     try:
-        from agent.display import render_edit_diff_with_delta
+        # TUI renders/highlights the diff itself (unifiedDiff.ts) — it needs
+        # RAW `--- a/x` / `+++ b/x` lines to detect the file's language, not
+        # the classic-CLI ANSI-colored, header-collapsed ("a/x → b/x") text
+        # render_edit_diff_with_delta produces for prompt_toolkit printers.
+        from agent.display import extract_capped_raw_diff
 
-        rendered: list[str] = []
-        if render_edit_diff_with_delta(
+        raw_diff = extract_capped_raw_diff(
             name,
             result,
             function_args=args,
             snapshot=snapshot,
-            print_fn=rendered.append,
-        ):
-            payload["inline_diff"] = "\n".join(rendered)
+        )
+        if raw_diff:
+            payload["inline_diff"] = raw_diff
     except Exception:
         pass
     if _tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name):

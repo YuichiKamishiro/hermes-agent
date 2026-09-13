@@ -204,6 +204,47 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
         pricing_version="openai-gpt-5.6-2026-07",
     ),
+    # ── Anthropic Claude Opus 5 / Fable 5 ────────────────────────────────
+    # Costs mirror the models.dev catalog snapshot (~/.hermes/
+    # models_dev_cache.json, anthropic block). Without these entries the two
+    # newest flagships resolve to no PricingEntry at all and session cost
+    # tracking silently reports nothing for them.
+    (
+        "anthropic",
+        "claude-opus-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="models_dev_catalog",
+        source_url="https://models.dev/",
+        pricing_version="anthropic-models-dev-2026-09",
+    ),
+    (
+        "anthropic",
+        "claude-fable-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        source="models_dev_catalog",
+        source_url="https://models.dev/",
+        pricing_version="anthropic-models-dev-2026-09",
+    ),
+    (
+        "anthropic",
+        "claude-fable-5-1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("0.25"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        source="models_dev_catalog",
+        source_url="https://models.dev/",
+        pricing_version="anthropic-models-dev-2026-09",
+    ),
     # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
     # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
     # model ID with 2x premium (vs the 6x premium on older Opus generations).

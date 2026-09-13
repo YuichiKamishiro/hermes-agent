@@ -1248,11 +1248,16 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
+      // `voice off` is the resting state for most sessions — it carries no
+      // information, so the label is empty (segment hidden) until voice is
+      // actually on/recording/transcribing.
       voiceLabel: voiceRecording
         ? '● REC'
         : voiceProcessing
           ? '◉ STT'
-          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
+          : voiceEnabled
+            ? `voice on${voiceTts ? ' [tts]' : ''}`
+            : ''
     }),
     [
       cwd,

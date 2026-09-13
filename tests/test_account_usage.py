@@ -114,7 +114,7 @@ def test_render_account_usage_lines_includes_reset_and_provider():
 
     assert lines[0] == "📈 Account limits"
     assert "openai-codex (Pro)" in lines[1]
-    assert "Session: 75% remaining (25% used)" in lines[2]
+    assert "Session " in lines[2] and "25% used" in lines[2]
     assert "Credits balance: $9.99" in lines[3]
 
 
@@ -201,3 +201,78 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_fetch_account_usage_anthropic_uses_limits_array(monkeypatch):
+    """#regression: Anthropic's oauth/usage endpoint moved real data into
+    `limits[]` (kind/percent/scope.model.display_name); the old flat fields
+    (seven_day_opus, seven_day_sonnet) now come back null, which silently
+    dropped the per-model weekly window and mislabeled 'Current week'."""
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token", lambda: "sk-ant-oat01-token"
+    )
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": None,
+                "seven_day": None,
+                "seven_day_opus": None,
+                "seven_day_sonnet": None,
+                "extra_usage": {"is_enabled": False},
+                "limits": [
+                    {
+                        "kind": "session",
+                        "percent": 31,
+                        "resets_at": "2026-09-11T16:50:00Z",
+                    },
+                    {
+                        "kind": "weekly_all",
+                        "percent": 34,
+                        "resets_at": "2026-09-12T21:00:00Z",
+                    },
+                    {
+                        "kind": "weekly_scoped",
+                        "percent": 39,
+                        "resets_at": "2026-09-12T21:00:00Z",
+                        "scope": {"model": {"display_name": "Fable"}},
+                    },
+                ],
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    labels = {w.label: w.used_percent for w in snapshot.windows}
+    assert labels == {
+        "Current session": 31.0,
+        "Current week (all models)": 34.0,
+        "Current week (Fable)": 39.0,
+    }
+
+
+def test_fetch_account_usage_anthropic_falls_back_to_legacy_fields(monkeypatch):
+    """Older backends without `limits[]` still parse via the flat fields."""
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token", lambda: "sk-ant-oat01-token"
+    )
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": {"utilization": 0.31, "resets_at": "2026-09-11T16:50:00Z"},
+                "seven_day": {"utilization": 0.34, "resets_at": "2026-09-12T21:00:00Z"},
+                "extra_usage": {"is_enabled": False},
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    labels = {w.label: w.used_percent for w in snapshot.windows}
+    assert labels == {"Current session": 31.0, "Current week": 34.0}

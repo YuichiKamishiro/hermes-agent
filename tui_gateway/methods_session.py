@@ -1699,6 +1699,29 @@ def _(rid, params: dict) -> dict:
             usage["credits_lines"] = credits
     except Exception:
         pass
+    # Provider account limits (e.g. Kimi for Coding /usages quota) — same
+    # source as the messaging-gateway /usage. Fail-open like credits above.
+    try:
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        provider = getattr(agent, "provider", None)
+        if not provider:
+            # Fresh session without an agent yet — fall back to the configured
+            # default provider; the kimi branch resolves URL/token itself.
+            from hermes_cli.config import load_config
+
+            provider = (load_config().get("model") or {}).get("provider")
+        if provider:
+            snapshot = fetch_account_usage(
+                provider,
+                base_url=getattr(agent, "base_url", None),
+                api_key=getattr(agent, "api_key", None),
+            )
+            account_lines = render_account_usage_lines(snapshot)
+            if account_lines:
+                usage["account_lines"] = account_lines
+    except Exception:
+        pass
     return _ok(rid, usage)
 
 

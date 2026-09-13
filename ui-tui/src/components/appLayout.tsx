@@ -9,10 +9,11 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
+import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
-import { PLACEHOLDER } from '../content/placeholders.js'
+import { FOLLOW_UP_PLACEHOLDER, PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
@@ -36,6 +37,7 @@ import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
+import { TodoPanel } from './todoPanel.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
@@ -110,6 +112,41 @@ export const PetPane = memo(function PetPane() {
   )
 })
 
+// Fixed top-right todo readout: stays pinned above the scrolling transcript
+// so a live plan survives long reasoning/tool-call streams without the user
+// hunting back through scrollback. Self-hides when the turn has no todos
+// (same convention as PetPane/SpawnHud). Reuses TodoPanel's own glyphs/tones;
+// it only supplies the fixed placement + the live todos/collapsed selectors.
+export const TodoHud = memo(function TodoHud() {
+  const ui = useStore($uiState)
+  // lastTodos (not todos): `todos` is cleared to [] by archiveTodosAtTurnEnd
+  // the moment a turn finishes, which blanked this fixed panel right when a
+  // user would glance at it. lastTodos mirrors every live update but survives
+  // that clear, so the HUD keeps showing the most recent plan between turns
+  // until a genuinely new session resets it.
+  const todos = useTurnSelector(state => state.lastTodos)
+  const collapsed = useTurnSelector(state => state.todoCollapsed)
+
+  if (!todos.length) {
+    return null
+  }
+
+  return (
+    <Box position="absolute" right={0} top={0}>
+      <Box
+        borderColor={ui.theme.color.border}
+        borderStyle="round"
+        flexDirection="column"
+        maxWidth={40}
+        opaque
+        paddingX={1}
+      >
+        <TodoPanel collapsed={collapsed} onToggle={toggleTodoCollapsed} t={ui.theme} todos={todos} />
+      </Box>
+    </Box>
+  )
+})
+
 const PromptPrefix = memo(function PromptPrefix({
   bold = false,
   color,
@@ -128,6 +165,27 @@ const PromptPrefix = memo(function PromptPrefix({
       <Box width={glyphWidth}>
         <Text bold={bold} color={color}>
           {promptText}
+        </Text>
+      </Box>
+      <Box width={COMPOSER_PROMPT_GAP_WIDTH} />
+    </Box>
+  )
+})
+
+/** Continuation rows of a multiline draft wear a dim `┆` in the prompt
+ *  column (right-aligned under the `❯` glyph) so the vertical extent of the
+ *  input stays visible — bare space made the 2nd+ lines look detached from
+ *  the composer entirely. */
+export const CONTINUATION_GLYPH = '┆'
+
+const ContinuationPrefix = memo(function ContinuationPrefix({ color, width }: { color: string; width: number }) {
+  const glyphWidth = Math.max(1, width - COMPOSER_PROMPT_GAP_WIDTH)
+
+  return (
+    <Box width={width}>
+      <Box justifyContent="flex-end" width={glyphWidth}>
+        <Text color={color} dim>
+          {CONTINUATION_GLYPH}
         </Text>
       </Box>
       <Box width={COMPOSER_PROMPT_GAP_WIDTH} />
@@ -289,8 +347,10 @@ const ComposerPane = memo(function ComposerPane({
   )
 
   const promptWidth = composerPromptWidth(promptText)
-  const promptBlank = ' '.repeat(promptWidth)
-  const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
+  // −1 pays for the frame's paddingLeft so the prompt glyph is not flush
+  // against the border; the frame's content area is cols−5 and
+  // promptWidth + inputColumns matches it exactly.
+  const inputColumns = stableComposerColumns(composer.cols - 1, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
@@ -354,7 +414,7 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       {status.showStickyPrompt ? (
-        <Text color={ui.theme.color.muted} wrap="truncate-end">
+        <Text color={ui.theme.color.statusFg} wrap="truncate-end">
           <Text color={ui.theme.color.label}>↳ </Text>
 
           {status.stickyPrompt}
@@ -366,7 +426,7 @@ const ComposerPane = memo(function ComposerPane({
       <StatusRulePane at="top" composer={composer} status={status} />
       <AmbientDock placement="dock-top" />
 
-      <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
+      <Box flexDirection="column" position="relative">
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
@@ -382,15 +442,30 @@ const ComposerPane = memo(function ComposerPane({
 
         {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 
+        {/* The draft zone is a closed card (user picked this over a bare
+            rule): the border supplies both the top boundary the old rule
+            drew and a bottom one above the status bar. Ink `width` is
+            border-box, and the NoSelect container already eats 2 columns via
+            paddingX={1}, so the frame is `cols - 2` wide and its content area
+            is `cols - 4` — exactly promptWidth + inputColumns. Input width is
+            unchanged; the border sits in the slack stableComposerColumns
+            already reserved as outer composer padding. */}
         {!isBlocked && (
-          <>
+          <Box
+            borderColor={ui.theme.color.border}
+            borderDimColor
+            borderStyle="round"
+            flexDirection="column"
+            paddingLeft={1}
+            width={Math.max(1, composer.cols - 2)}
+          >
             {composer.inputBuf.map((line, i) => (
               <Box key={i}>
                 <Box width={promptWidth}>
                   {i === 0 ? (
                     <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
                   ) : (
-                    <Text color={ui.theme.color.muted}>{promptBlank}</Text>
+                    <ContinuationPrefix color={ui.theme.color.muted} width={promptWidth} />
                   )}
                 </Box>
 
@@ -405,14 +480,21 @@ const ComposerPane = memo(function ComposerPane({
               position="relative"
               width={Math.max(1, composer.cols - 2)}
             >
-              <Box width={promptWidth}>
+              <Box flexDirection="column" width={promptWidth}>
                 {sh ? (
                   <PromptPrefix color={ui.theme.color.shellDollar} promptText={promptText} width={promptWidth} />
                 ) : composer.inputBuf.length ? (
-                  <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
+                  <ContinuationPrefix color={ui.theme.color.muted} width={promptWidth} />
                 ) : (
                   <PromptPrefix bold color={ui.theme.color.prompt} promptText={promptText} width={promptWidth} />
                 )}
+                {/* One ┆ per wrapped/newline row below the first, so a
+                    multiline draft reads as one connected input block
+                    instead of orphaned lines floating next to a bare
+                    prompt-column gap. */}
+                {Array.from({ length: Math.max(0, inputHeight - 1) }, (_, i) => (
+                  <ContinuationPrefix color={ui.theme.color.muted} key={i} width={promptWidth} />
+                ))}
               </Box>
 
               <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
@@ -425,7 +507,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : FOLLOW_UP_PLACEHOLDER}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both
                   // poles even when polarity detection is wrong (transparent
@@ -441,7 +523,7 @@ const ComposerPane = memo(function ComposerPane({
                 <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
               </Box>
             </Box>
-          </>
+          </Box>
         )}
       </Box>
 
@@ -580,6 +662,7 @@ export const AppLayout = memo(function AppLayout({
         )}
 
         {!overlay.agents && <PetPane />}
+        {!overlay.agents && !overlay.journey && <TodoHud />}
       </Box>
 
       <ActiveWidgetSlot />
